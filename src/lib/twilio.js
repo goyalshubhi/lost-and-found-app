@@ -1,45 +1,49 @@
-import Item from '../model/items';
-import Account from '../model/account';
-// JV: abstracting this out was an awesome idea!
+import Item from '../model/items.js';
+import Account from '../model/account.js';
+import dotenv from 'dotenv';
+import twilio from 'twilio';
 
-require('dotenv').config();
+dotenv.config();
 
-const client = require('twilio')(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
-function sendMessage(phoneNum, imageUrl) {
-  return client.messages //eslint-disable-line
-    .create({
+async function sendMessage(phoneNum, imageUrl) {
+  try {
+    const message = await client.messages.create({
       body: 'Is this your lost item??',
       from: process.env.TWILIO_NUM,
-      mediaUrl: `${imageUrl}`,
+      mediaUrl: imageUrl ? [imageUrl] : [],
       to: `+${phoneNum}`,
-    })
-    .then((message) => {
-      return message.sid;
-    })
-    .done();
+    });
+    return message.sid;
+  } catch (err) {
+    console.error('❌ Error sending Twilio message:', err.message);
+  }
 }
 
-function itemPreHook(done) {
-  return Item.find({}) 
-    .then((item) => {
-      if (!item.length) {
-        return undefined;
-      }
-      for (let i = 0; i < item.length; i++) {
-        if (item[i].postType !== this.postType && item[i].itemType === this.itemType) {
-          return Account.findOne({ _id: item[i].accountId })
-            .then((account) => {
-              return sendMessage(account.phoneNumber, this.imageUrl);
-            })
-            .catch(console.error); //eslint-disable-line
+// ✅ Proper pre-save hook using normal function syntax (not arrow)
+async function itemPreHook(next) {
+  try {
+    const items = await Item.find({});
+    if (!items.length) return next();
+
+    for (let i = 0; i < items.length; i++) {
+      const oldItem = items[i];
+
+      // only send if postType is opposite (Lost vs Found) and same itemType
+      if (oldItem.postType !== this.postType && oldItem.itemType === this.itemType) {
+        const account = await Account.findById(oldItem.accountId);
+        if (account && account.phoneNumber) {
+          await sendMessage(account.phoneNumber, this.imageUrl);
         }
       }
-      return undefined;
-    })
-    .then(() => done())
-    .catch(done);
+    }
+
+    next();
+  } catch (err) {
+    console.error('❌ itemPreHook error:', err.message);
+    next(err);
+  }
 }
 
 export default itemPreHook;
-

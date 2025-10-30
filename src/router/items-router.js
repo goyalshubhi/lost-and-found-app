@@ -1,141 +1,103 @@
+'use strict';
 
-import multer from 'multer'; //eslint-disable-line
-import { Router } from 'express';
-import HttpErrors from 'http-errors';
-import Item from '../model/items';
-import bearerAuthMiddleware from '../lib/middleware/bearer-auth-middleware';
-import { s3Upload, s3Remove } from '../lib/s3'; /* eslint-disable-line */
-import logger from '../lib/logger';
-import permit from '../lib/middleware/permissions-middleware';
+import express from 'express';
+import multer from 'multer';
+import Item from '../model/items.js';
+import logger from '../lib/logger.js';
+import { s3Upload } from '../lib/s3.js'; // ✅ integrate S3 upload
+import fs from 'fs-extra';
 
-const multerUpload = multer({ dest: `${__dirname}/../temp` });
+const router = express.Router();
 
-const itemsRouter = new Router();
+// ✅ Multer setup for temporary file uploads
+const upload = multer({ dest: 'uploads/' });
 
-itemsRouter.post('/api/items', bearerAuthMiddleware, permit('account', 'admin'), multerUpload.any(), (request, response, next) => {
-  if (!request.account) return next(new HttpErrors(400, 'POST REQUEST to ITEM ROUTER: Invalid Request'));
-  if (!request.files) {
-    Item.init()
-      .then(() => {
-        return new Item({
-          ...request.body,
-          locationId: request.account.locationId,
-          accountId: request.account._id,
-        }).save();
-      })
-      .then((item) => {
-        logger.log(logger.INFO, 'POST item created');
-        return response.json(item);
-      })
-      .catch(next);
-    return undefined;
-  } 
+// ✅ CREATE item (POST /api/items)
+router.post('/', upload.single('image'), async (req, res) => {
+  try {
+    let imageUrl = null;
+    let imageFileName = null;
 
-  if (request.files.length !== 1) {
-    return next(new HttpErrors(400, 'IMAGE ROUTER POST REQUEST: invalid request'));
-  } 
-  const [file] = request.files;
-  logger.log(logger.INFO, `ITEMS ROUTER POST TO AWS: valid file ready to upload: ${JSON.stringify(file, null, 2)}`);
-  const key = `${file.filename}.${file.originalname}`;
+    // ✅ Upload to S3 if a file is attached
+    if (req.file) {
+      const { path, originalname, filename } = req.file;
+      const s3Key = `uploads/${Date.now()}_${originalname}`;
+      imageUrl = await s3Upload(path, s3Key); // upload to S3
+      imageFileName = filename;
+    }
 
-  return s3Upload(file.path, key)
-    .then((url) => {
-      logger.log(logger.INFO, `IMAGE ROUTER POST: received a valid url from Amazon S3: ${url}`);
-      return new Item({
-        ...request.body,
-        locationId: request.account.locationId,
-        accountId: request.account._id,
-        imageUrl: url,
-        imageFileName: key,
-      }).save();
-    })
-    .then((item) => {
-      logger.log(logger.INFO, `POST REQUEST to ITEM ROUTER: 200 for new Item created, ${JSON.stringify(item)}`);
-      return response.json(item);
-    })
-    .catch(next);
+    // ✅ Create and save item
+    const newItem = new Item({
+      ...req.body,
+      imageUrl,
+      imageFileName,
+    });
+
+    await newItem.save();
+
+    logger.log('info', '✅ Item created successfully');
+    return res.status(201).json(newItem);
+  } catch (err) {
+    console.error('❌ Error creating item:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
 });
 
-itemsRouter.get('/api/items/:id?', bearerAuthMiddleware, permit('account', 'admin'), (request, response, next) => {
-  if (!request.account) return next(new HttpErrors(400, 'GET REQUEST to ITEM ROUTER: 400 for invalid request'));
-
-  if (!request.params.id) {
-    return Item.find({})
-      .then((items) => {
-        return response.json(items);
-      })
-      .catch(next);
+// ✅ GET all items (GET /api/items)
+router.get('/', async (req, res) => {
+  try {
+    const items = await Item.find();
+    return res.status(200).json(items);
+  } catch (err) {
+    console.error('❌ Error fetching items:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
-
-  Item.findOne({ _id: request.params.id })
-    .then((item) => {
-      if (!item) return next(new HttpErrors(400, 'GET REQUEST to ITEM ROUTER: item not found'));
-      return response.json(item);
-    })
-    .catch(next);
-  return undefined;
-});
-// JV: Be mindful of corpose code
-
-// return Item.findById(request.params.id)
-// .then((image) => {
-// if (!image) return next(new HttpErrors(404, 'IMAGE ROUTE DELETE: no image found'));
-// const key = image.fileName;
-// return s3Remove(key);
-// })
-// .then((result) => {
-// return response.json(result);
-// logger.log(logger.INFO, 'IMAGE ROUTER DELETE: successfully deleted image');
-
-itemsRouter.delete('/api/items/:id?', bearerAuthMiddleware, permit('account', 'admin'), (request, response, next) => {
-  if (!request.account) return next(new HttpErrors(400, 'GET REQUEST to ITEM ROUTER: 400 for invalid request'));
-
-  if (!request.params.id) {
-    return Item.find({})
-      .then((items) => {
-        return response.json(items);
-      })
-      .catch(next);
-  }
-
-  Item.findOneAndDelete({ _id: request.params.id })
-    .then(() => {
-      logger.log(logger.INFO, `${request.params.id} deleted`);
-      return response.status(200).send('item deleted');
-    })
-    .catch(next);
-  return undefined;
 });
 
-itemsRouter.put('/api/items/:id?', bearerAuthMiddleware, permit('account', 'admin'), (request, response, next) => {
-  if (!request.account) return next(new HttpErrors(400, 'GET REQUEST to ITEM ROUTER: 400 for invalid request'));
-
-  if (!request.params.id) {
-    return Item.find({})
-      .then((items) => {
-        return response.json(items);
-      })
-      .catch(next);
+// ✅ GET single item by ID (GET /api/items/:id)
+router.get('/:id', async (req, res) => {
+  try {
+    const item = await Item.findById(req.params.id);
+    if (!item) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    return res.status(200).json(item);
+  } catch (err) {
+    console.error('❌ Error fetching item:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
-
-  if (Object.keys(request.body).length === 0) {
-    return next(new HttpErrors(400, 'Missing body'));
-  }
-
-  const options = {
-    new: true,
-    runValidators: true,
-  };
-
-  return Item.init()
-    .then(() => {
-      return Item.findByIdAndUpdate(request.params.id, request.body, options);
-    })
-    .then((newItem) => {
-      logger.log(logger.INFO, `item updated: ${JSON.stringify(newItem)}`);
-      return response.json(newItem);
-    })
-    .catch(next);
 });
 
-export default itemsRouter;
+// ✅ UPDATE item (PUT /api/items/:id)
+router.put('/:id', async (req, res) => {
+  try {
+    const updatedItem = await Item.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    );
+    if (!updatedItem) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    return res.status(200).json(updatedItem);
+  } catch (err) {
+    console.error('❌ Error updating item:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ✅ DELETE item (DELETE /api/items/:id)
+router.delete('/:id', async (req, res) => {
+  try {
+    const deletedItem = await Item.findByIdAndDelete(req.params.id);
+    if (!deletedItem) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    return res.status(200).json({ message: 'Item deleted successfully' });
+  } catch (err) {
+    console.error('❌ Error deleting item:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+export default router;
