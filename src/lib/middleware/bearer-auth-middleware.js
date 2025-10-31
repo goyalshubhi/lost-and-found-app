@@ -2,41 +2,37 @@
 
 import HttpErrors from 'http-errors';
 import jsonWebToken from 'jsonwebtoken';
-import { promisify } from 'util';
-import Account from '../../model/account';
-import Admin from '../../model/admin';
+import Account from '../../model/account.js'; // ✅ fixed path
 
-const jwtVerify = promisify(jsonWebToken.verify);
+/**
+ * ✅ Bearer Authentication Middleware
+ * Checks Authorization header for a valid JWT token.
+ * Attaches the verified account to req.user.
+ */
+export default async function bearerAuth(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
 
-export default (req, res, next) => {
-  if (!req.headers.authorization) return next(new HttpErrors(400, 'BEARER AUTH - No headers auth'));
+    if (!authHeader)
+      throw new HttpErrors(401, 'Authorization header required');
 
-  const token = req.headers.authorization.split('Bearer ')[1];
-  if (!token) return next(new HttpErrors(401, 'Bad token'));
+    const token = authHeader.split('Bearer ')[1];
+    if (!token) throw new HttpErrors(401, 'Invalid Authorization header format');
 
-  let tokenCache;
+    let tokenData;
+    try {
+      tokenData = jsonWebToken.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      throw new HttpErrors(401, 'Invalid or expired token');
+    }
 
-  return jwtVerify(token, process.env.SECRET_KEY)
-    .catch((err) => {
-      return Promise.reject(new HttpErrors(400, `BEARER AUTH - jsonWebToken error ${JSON.stringify(err)}`));
-    })
-    .then((decryptedToken) => {
-      tokenCache = decryptedToken.tokenSeed;
-      return Account.findOne({ tokenSeed: tokenCache });
-    })
-    .then((account) => {
-      if (!account) {
-        return Admin.findOne({ tokenSeed: tokenCache })
-          .then((admin) => {
-            req.permissions = 'admin';
-            req.account = admin;
-            return next();
-          })
-          .catch(next);
-      }
-      req.permissions = 'account';
-      req.account = account;
-      return next();
-    })
-    .catch(next);
-};
+    const account = await Account.findOne({ tokenSeed: tokenData.tokenSeed });
+    if (!account) throw new HttpErrors(401, 'Invalid account');
+
+    req.user = account; // ✅ store logged-in user
+    return next();
+  } catch (err) {
+    console.error('❌ Bearer Auth Error:', err.message);
+    return res.status(err.status || 401).json({ error: err.message });
+  }
+}

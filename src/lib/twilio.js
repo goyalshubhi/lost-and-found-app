@@ -1,49 +1,44 @@
-import Item from '../model/items.js';
-import Account from '../model/account.js';
-import dotenv from 'dotenv';
+'use strict';
+
 import twilio from 'twilio';
 
-dotenv.config();
+// ✅ Ensure all Twilio credentials exist
+const { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER } = process.env;
 
-const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
+  console.error('❌ Missing Twilio environment variables.');
+}
 
-async function sendMessage(phoneNum, imageUrl) {
+const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+
+/**
+ * ✅ Send an SMS using Twilio
+ * @param {Object} params
+ * @param {string} params.to - The recipient phone number (in +countrycode format)
+ * @param {string} params.message - The message body
+ * @returns {Promise<string|null>} - The message SID or null if failed
+ */
+export const sendSMS = async ({ to, message }) => {
+  if (!to || !message) {
+    console.error('❌ Missing parameters for sendSMS:', { to, message });
+    return null;
+  }
+
   try {
-    const message = await client.messages.create({
-      body: 'Is this your lost item??',
-      from: process.env.TWILIO_NUM,
-      mediaUrl: imageUrl ? [imageUrl] : [],
-      to: `+${phoneNum}`,
+    const msg = await client.messages.create({
+      body: message,
+      from: TWILIO_PHONE_NUMBER,
+      to,
     });
-    return message.sid;
+
+    console.log(`✅ SMS sent successfully to ${to}`);
+    console.log(`📨 Twilio Message SID: ${msg.sid}`);
+    return msg.sid;
   } catch (err) {
-    console.error('❌ Error sending Twilio message:', err.message);
+    console.error('❌ Twilio SMS Error:', err.message);
+    if (err.code) console.error('🔍 Twilio Error Code:', err.code);
+    return null;
   }
-}
+};
 
-// ✅ Proper pre-save hook using normal function syntax (not arrow)
-async function itemPreHook(next) {
-  try {
-    const items = await Item.find({});
-    if (!items.length) return next();
-
-    for (let i = 0; i < items.length; i++) {
-      const oldItem = items[i];
-
-      // only send if postType is opposite (Lost vs Found) and same itemType
-      if (oldItem.postType !== this.postType && oldItem.itemType === this.itemType) {
-        const account = await Account.findById(oldItem.accountId);
-        if (account && account.phoneNumber) {
-          await sendMessage(account.phoneNumber, this.imageUrl);
-        }
-      }
-    }
-
-    next();
-  } catch (err) {
-    console.error('❌ itemPreHook error:', err.message);
-    next(err);
-  }
-}
-
-export default itemPreHook;
+export default sendSMS;

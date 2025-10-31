@@ -1,63 +1,79 @@
+// src/router/twilio-router.js
+router.get('/test', (req, res) => {
+  res.json({ message: 'Twilio router working ✅' });
+});
 'use strict';
-// JV: Twilio router looks great
-import { Router } from 'express';
-import Account from '../model/account';
-import Items from '../model/items';
-import Admin from '../model/admin';
 
+import express from 'express';
+import Item from '../model/items.js';
+import Account from '../model/account.js'; // ensures model registered
+import { sendSMS } from '../lib/twilio.js';
 
-function getAdminNum() {
-  return Admin.find({})
-    .then((admin) => {
-      return admin[0].phoneNumber;
-    })
-    .catch(console.error);  /* eslint-disable-line */
-}
+const router = express.Router();
 
-const MessagingResponse = require('twilio').twiml.MessagingResponse; //eslint-disable-line
-
-const twilioRouter = new Router();
-
-twilioRouter.post('/api/sms', (req, res) => {
-  const twiml = new MessagingResponse();
-  const body = req.body.Body.toLowerCase();
-  const from = req.body.From.slice(1);
-  return Account.findOne({ phoneNumber: from })
-    .then((account) => {
-      return Items.findOne({ accountId: account._id });
-    })
-    .then((item) => {
-      if (item.itemType === 'wallet/purse' || item.itemType === 'keys' || item.itemType === 'computer') {
-        return getAdminNum()
-          .then((num) => {
-            if (body === 'yes') {
-              twiml.message(`Great! The Admin has it, please contact him/her at ${num} for your ${item.itemType}`);
-            } else if (body === 'no') {
-              twiml.message('We\'ll keep on looking!');
-            } else {
-              twiml.message('Please respond with "yes" or "no"');
-            }
-    
-            res.writeHead(200, { 'Content-Type': 'text/xml' });
-            res.end(twiml.toString());
-          })
-          .catch(console.error); /* eslint-disable-line */
-      } 
-
-      if (body === 'yes') {
-        twiml.message('Great! Please look for it at the campus Lost and Found');
-      } else if (body === 'no') {
-        twiml.message('We\'ll keep on looking!');
-      } else {
-        twiml.message('Please respond with "yes" or "no"');
-      }
-
-      res.writeHead(200, { 'Content-Type': 'text/xml' });
-      res.end(twiml.toString());
-
-      return undefined;
+/**
+ * Debug route — check items and populated users
+ * GET /api/twilio/debug-items
+ */
+router.get('/debug-items', async (req, res) => {
+  try {
+    const items = await Item.find().populate('accountId', 'username phone email firstName lastName');
+    res.json({
+      count: items.length,
+      items,
     });
+  } catch (err) {
+    console.error('❌ Error fetching items:', err.message);
+    res.status(500).json({ error: 'Failed to fetch items' });
+  }
 });
 
-export default twilioRouter;
+/**
+ * Notify route — send SMS to the owner of the lost item when a match occurs
+ * POST /api/twilio/notify
+ * body: { foundItemId, lostItemId }
+ */
+router.post('/notify', async (req, res) => {
+  try {
+    const { foundItemId, lostItemId } = req.body;
+    if (!foundItemId || !lostItemId) {
+      return res.status(400).json({ message: 'Missing foundItemId or lostItemId' });
+    }
 
+    const foundItem = await Item.findById(foundItemId).populate('accountId', 'phone firstName lastName username');
+    const lostItem = await Item.findById(lostItemId).populate('account', 'phone firstName lastName username');
+
+    if (!foundItem || !lostItem) {
+      return res.status(404).json({
+        message: 'One or both items not found in DB',
+        foundItemExists: !!foundItem,
+        lostItemExists: !!lostItem,
+      });
+    }
+
+    // Validate phone numbers
+    const foundPhone = foundItem.userId && foundItem.userId.phone;
+    const lostPhone = lostItem.userId && lostItem.userId.phone;
+
+    if (!foundPhone || !lostPhone) {
+      return res.status(400).json({
+        message: 'Missing phone number for one or both users',
+        foundUserPhone: foundPhone || null,
+        lostUserPhone: lostPhone || null,
+      });
+    }
+
+    const message = `📢 Match Found!\nItem: ${foundItem.title}\nFound by: ${foundItem.userId.firstName || foundItem.userId.username}\nContact: ${foundPhone}`;
+
+    const sid = await sendSMS({ to: lostPhone, message });
+    if (!sid) return res.status(500).json({ message: 'Failed to send SMS via Twilio' });
+
+    console.log('✅ SMS sent successfully for item match.');
+    return res.json({ success: true, sid });
+  } catch (err) {
+    console.error('❌ Twilio Notify Route Error:', err.message);
+    return res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+export default router;

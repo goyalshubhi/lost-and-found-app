@@ -1,44 +1,42 @@
-'use strict';
-
 import mongoose from 'mongoose';
-import itemPreHook from '../lib/twilio.js';
 
-const itemsSchema = new mongoose.Schema(
+const itemSchema = new mongoose.Schema(
   {
+    // Whether it's a lost or found item
     postType: {
       type: String,
-      required: [true, 'Post type is required'], // e.g. Lost / Found / anything
-      trim: true,
+      enum: ['Lost', 'Found'],
+      required: true,
     },
-    itemType: {
-      type: String,
-      required: [true, 'Item type is required'], // any string accepted
-      trim: true,
-    },
+
+    // Type of item, e.g., wallet, phone, bag
+    itemType: { type: String, required: true },
+
+    // Optional fields for details
+    color: String,
+    material: String,
     locationId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'locations',
-      required: false,
+      ref: 'Location', // optional if you have a Location model
     },
-    color: { type: String, trim: true },
-    material: { type: String, trim: true },
-    imageUrl: { type: String },
-    imageFileName: { type: String },
+
+    // Image data
+    imageUrl: String,
+    imageFileName: String,
+
+    // 🔗 Link to the Account who posted it
     accountId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'accounts',
-      required: [true, 'Account ID is required'],
+      ref: 'Account',  // ✅ Matches your Account model name
+      required: true,
     },
-    approved: {
-      type: Boolean,
-      default: false,
-    },
+
+    approved: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
 
-// ✅ Pre-save Twilio hook
-itemsSchema.pre('save', itemPreHook);
+// ✅ Register model (collection name = 'items')
+const Item = mongoose.model('Item', itemSchema, 'items');
 
-const Item = mongoose.model('items', itemsSchema);
 export default Item;

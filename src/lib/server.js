@@ -6,7 +6,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import 'regenerator-runtime/runtime.js';
 import logger from './logger.js';
-
+import accountRouter from '../router/account-router.js';
 import errorMiddleware from './middleware/error-middleware.js';
 import loggerMiddleware from './middleware/logger-middleware.js';
 
@@ -27,7 +27,7 @@ app.use(cors());
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 app.use(loggerMiddleware);
-
+app.use('/api/accounts', accountRouter);
 // ✅ Routes
 app.use('/api/auth', authRouter);
 app.use('/api/admin', adminRouter);

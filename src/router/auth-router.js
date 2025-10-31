@@ -1,43 +1,54 @@
-import { Router } from 'express';
+'use strict';
+
+import express from 'express';
 import HttpErrors from 'http-errors';
-import Account from '../model/account';
-import basicAuthMiddleware from '../lib/middleware/basic-auth-middleware';
-import logger from '../lib/logger';
-import Admin from '../model/admin';
+import Account from '../model/account.js';
+import basicAuth from '../lib/middleware/basic-auth-middleware.js';
 
-const authRouter = new Router();
+const router = express.Router();
 
-authRouter.post('/api/signup', (request, response, next) => {
-  Account.init()
-    .then(() => {
-      return Admin.find({});
-    })
-    .then((admin) => {
-      return admin[0]._id;
-    })
-    .then((locationId) => {
-      return Account.create(request.body.username, request.body.password, request.body.email, request.body.firstName, request.body.lastName, locationId, request.body.phoneNumber);
-    })
-    .then((account) => {
-      delete request.body.password;
-      logger.log(logger.INFO, 'AUTH ROUTER to /api/signup: creating token');
-      return account.createToken();
-    })
-    .then((token) => {
-      logger.log(logger.INFO, `AUTH ROUTER to /api/signup: sending a 200 code and a token ${token}`);
-      return response.json({ token });
-    })
-    .catch(next);
+/**
+ * ✅ Signup Route
+ * POST /api/auth/signup
+ */
+router.post('/signup', async (req, res, next) => {
+  try {
+    const { username, password, email, firstName, lastName, phone } = req.body;
+
+    if (!username || !password || !email || !firstName || !lastName) {
+      throw new HttpErrors(400, 'Missing required fields');
+    }
+
+    const account = await Account.createAccount({
+      username,
+      password,
+      email,
+      firstName,
+      lastName,
+      phone,
+    });
+
+    const token = await account.createToken();
+    res.status(201).json({ token, account });
+  } catch (err) {
+    console.error('❌ Signup Error:', err.message);
+    next(err);
+  }
 });
 
-authRouter.get('/api/login', basicAuthMiddleware, (request, response, next) => {
-  if (!request.account) return next(new HttpErrors(400, 'AUTH ROUTER to /api/login: invalid request'));
-  return request.account.createToken()
-    .then((token) => {
-      logger.log(logger.INFO, `AUTH ROUTER to /api/login - responding with 200 status code and token ${token}`);
-      return response.json({ token });  
-    })
-    .catch(next);
+/**
+ * ✅ Login Route
+ * GET /api/auth/login
+ * Uses Basic Auth header (base64 encoded username:password)
+ */
+router.get('/login', basicAuth, async (req, res, next) => {
+  try {
+    const token = await req.account.createToken();
+    res.status(200).json({ token, account: req.account });
+  } catch (err) {
+    console.error('❌ Login Error:', err.message);
+    next(err);
+  }
 });
 
-export default authRouter;
+export default router;

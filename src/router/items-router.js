@@ -1,102 +1,71 @@
-'use strict';
-
 import express from 'express';
-import multer from 'multer';
 import Item from '../model/items.js';
-import logger from '../lib/logger.js';
-import { s3Upload } from '../lib/s3.js'; // ✅ integrate S3 upload
-import fs from 'fs-extra';
+import Account from '../model/account.js';
+import { sendSMS } from '../lib/twilio.js';
 
 const router = express.Router();
 
-// ✅ Multer setup for temporary file uploads
-const upload = multer({ dest: 'uploads/' });
-
-// ✅ CREATE item (POST /api/items)
-router.post('/', upload.single('image'), async (req, res) => {
+router.post('/match-items', async (req, res) => {
   try {
-    let imageUrl = null;
-    let imageFileName = null;
+    console.log('🔍 Matching Lost/Found items...');
 
-    // ✅ Upload to S3 if a file is attached
-    if (req.file) {
-      const { path, originalname, filename } = req.file;
-      const s3Key = `uploads/${Date.now()}_${originalname}`;
-      imageUrl = await s3Upload(path, s3Key); // upload to S3
-      imageFileName = filename;
-    }
-
-    // ✅ Create and save item
-    const newItem = new Item({
-      ...req.body,
-      imageUrl,
-      imageFileName,
-    });
-
-    await newItem.save();
-
-    logger.log('info', '✅ Item created successfully');
-    return res.status(201).json(newItem);
-  } catch (err) {
-    console.error('❌ Error creating item:', err.message);
-    return res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
-// ✅ GET all items (GET /api/items)
-router.get('/', async (req, res) => {
-  try {
     const items = await Item.find();
-    return res.status(200).json(items);
-  } catch (err) {
-    console.error('❌ Error fetching items:', err.message);
-    return res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
 
-// ✅ GET single item by ID (GET /api/items/:id)
-router.get('/:id', async (req, res) => {
-  try {
-    const item = await Item.findById(req.params.id);
-    if (!item) {
-      return res.status(404).json({ error: 'Item not found' });
-    }
-    return res.status(200).json(item);
-  } catch (err) {
-    console.error('❌ Error fetching item:', err.message);
-    return res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
+    const lostItems = items.filter(i => i.postType === 'Lost');
+    const foundItems = items.filter(i => i.postType === 'Found');
 
-// ✅ UPDATE item (PUT /api/items/:id)
-router.put('/:id', async (req, res) => {
-  try {
-    const updatedItem = await Item.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true }
-    );
-    if (!updatedItem) {
-      return res.status(404).json({ error: 'Item not found' });
-    }
-    return res.status(200).json(updatedItem);
-  } catch (err) {
-    console.error('❌ Error updating item:', err.message);
-    return res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
+    let matches = [];
 
-// ✅ DELETE item (DELETE /api/items/:id)
-router.delete('/:id', async (req, res) => {
-  try {
-    const deletedItem = await Item.findByIdAndDelete(req.params.id);
-    if (!deletedItem) {
-      return res.status(404).json({ error: 'Item not found' });
+    for (const lost of lostItems) {
+      for (const found of foundItems) {
+        // ✅ Remove optional chaining — use safe checks
+        const lostType = lost.itemType ? lost.itemType.toLowerCase() : '';
+        const foundType = found.itemType ? found.itemType.toLowerCase() : '';
+        const lostColor = lost.color ? lost.color.toLowerCase() : '';
+        const foundColor = found.color ? found.color.toLowerCase() : '';
+
+        if (lostType === foundType && lostColor === foundColor) {
+          matches.push({ lost, found });
+
+          // ✅ Fetch both users safely
+          const user1 = await Account.findById(lost.accountId);
+          const user2 = await Account.findById(found.accountId);
+
+          const msg =
+            '📢 Lost & Found Match!\n\n' +
+            'A match was found for your ' +
+            lost.itemType +
+            ' (' +
+            lost.color +
+            ').\nCheck the Lost & Found app to contact the other user.';
+
+          if (user1 && user1.phone) {
+            console.log('📱 Sending SMS to Lost user:', user1.phone);
+            await sendSMS({ to: user1.phone, message: msg });
+          }
+
+          if (user2 && user2.phone) {
+            console.log('📱 Sending SMS to Found user:', user2.phone);
+            await sendSMS({ to: user2.phone, message: msg });
+          }
+
+          console.log('✅ SMS sent for match:', lost.itemType, '(', lost.color, ')');
+        }
+      }
     }
-    return res.status(200).json({ message: 'Item deleted successfully' });
+
+    if (matches.length === 0) {
+      console.log('⚠️ No matches found.');
+      return res.json({ message: 'No matches found', matches: [] });
+    }
+
+    res.json({
+      message: '✅ ' + matches.length + ' match(es) found and SMS sent.',
+      matches,
+    });
   } catch (err) {
-    console.error('❌ Error deleting item:', err.message);
-    return res.status(500).json({ error: 'Internal Server Error' });
+    console.error('❌ Error in match-items route:', err);
+    res.status(500).json({ error: 'Failed to process item matching' });
   }
 });
 
